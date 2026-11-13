@@ -10,6 +10,7 @@ import android.content.SharedPreferences
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.util.Log
 import org.lunaris.dolby.DolbyConstants
 import org.lunaris.dolby.DolbyConstants.DsParam
 import org.lunaris.dolby.R
@@ -18,6 +19,9 @@ import org.lunaris.dolby.domain.models.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+
+internal class DolbyEffectUnavailableException(cause: RuntimeException) :
+    RuntimeException("Dolby effect is unavailable", cause)
 
 class DolbyRepository(private val context: Context) : AutoCloseable {
 
@@ -44,9 +48,8 @@ class DolbyRepository(private val context: Context) : AutoCloseable {
     private fun createDolbyEffect(): DolbyAudioEffect {
         return try {
             DolbyAudioEffect(EFFECT_PRIORITY, audioSession = 0)
-        } catch (e: Exception) {
-            DolbyConstants.dlog(TAG, "Failed to create Dolby effect: ${e.message}")
-            throw e
+        } catch (e: RuntimeException) {
+            throw DolbyEffectUnavailableException(e)
         }
     }
 
@@ -120,12 +123,19 @@ class DolbyRepository(private val context: Context) : AutoCloseable {
         }
     }
 
-    fun applySavedState() {
-    checkEffect()
-        val enabled = defaultPrefs.getBoolean(DolbyConstants.PREF_ENABLE, false)
-        dolbyEffect.dsOn = enabled
-        if (enabled) {
-            restoreSavedProfileIfNeeded()
+    fun applySavedState(): Boolean {
+        if (isReleased) return false
+        return try {
+            checkEffect()
+            val enabled = defaultPrefs.getBoolean(DolbyConstants.PREF_ENABLE, false)
+            dolbyEffect.dsOn = enabled
+            if (enabled) {
+                restoreSavedProfileIfNeeded()
+            }
+            true
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Unable to apply Dolby state", e)
+            false
         }
     }
 

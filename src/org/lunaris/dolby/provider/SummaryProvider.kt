@@ -13,8 +13,10 @@ import android.content.ContentValues
 import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import org.lunaris.dolby.R
 import org.lunaris.dolby.data.DolbyRepository
+import org.lunaris.dolby.data.DolbyEffectUnavailableException
 
 private const val KEY_DOLBY = "dolby"
 private const val META_DATA_PREFERENCE_SUMMARY = "com.android.settings.summary"
@@ -56,13 +58,14 @@ class SummaryProvider : ContentProvider() {
 
     private fun getDolbySummary(): String {
         val context = context ?: return ""
-        val repository = DolbyRepository(context)
-        
-        if (!repository.getDolbyEnabled()) {
-            return context.getString(R.string.dolby_off)
-        }
-        
-        val profile = repository.getCurrentProfile()
+        val profile = try {
+            DolbyRepository(context).use { repository ->
+                if (repository.getDolbyEnabled()) repository.getCurrentProfile() else null
+            }
+        } catch (e: DolbyEffectUnavailableException) {
+            Log.w("DolbySummaryProvider", "Dolby effect is unavailable", e)
+            return context.getString(R.string.dolby_unknown)
+        } ?: return context.getString(R.string.dolby_off)
         val profiles = context.resources.getStringArray(R.array.dolby_profile_entries)
         val profileValues = context.resources.getStringArray(R.array.dolby_profile_values)
         

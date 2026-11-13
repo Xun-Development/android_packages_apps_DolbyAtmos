@@ -20,6 +20,7 @@ import org.lunaris.dolby.DolbyConstants
 import org.lunaris.dolby.R
 import org.lunaris.dolby.data.AppProfileManager
 import org.lunaris.dolby.data.DolbyRepository
+import org.lunaris.dolby.data.DolbyEffectUnavailableException
 import org.lunaris.dolby.utils.ToastHelper
 import java.util.concurrent.atomic.AtomicReference
 
@@ -33,6 +34,7 @@ class AppProfileMonitorService : Service() {
     private val lastPackageName = AtomicReference<String?>(null)
     private var originalProfile: Int = -1
     private var isMonitoring = false
+    private var effectUnavailable = false
     private var pendingSwitchRunnable: Runnable? = null
     private var hasOriginalProfile = false
     private var lastProfileChangeTime: Long = 0
@@ -49,7 +51,14 @@ class AppProfileMonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         appProfileManager = AppProfileManager(this)
-        dolbyRepository = DolbyRepository(this)
+        dolbyRepository = try {
+            DolbyRepository(this)
+        } catch (e: DolbyEffectUnavailableException) {
+            Log.w(TAG, "Dolby effect is unavailable, stopping monitoring", e)
+            effectUnavailable = true
+            stopSelf()
+            return
+        }
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         
         val prefs = getSharedPreferences("dolby_prefs", Context.MODE_PRIVATE)
@@ -65,6 +74,10 @@ class AppProfileMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (effectUnavailable) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_START_MONITORING -> startMonitoring()
             ACTION_STOP_MONITORING -> stopMonitoring()
@@ -258,8 +271,10 @@ class AppProfileMonitorService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         DolbyConstants.dlog(TAG, "Service destroyed")
-        stopMonitoring()
-        dolbyRepository.close()
+        if (::dolbyRepository.isInitialized) {
+            stopMonitoring()
+            dolbyRepository.close()
+        }
         hasOriginalProfile = false
     }
 

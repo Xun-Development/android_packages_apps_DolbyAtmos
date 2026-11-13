@@ -19,6 +19,7 @@ import android.util.Log
 import org.lunaris.dolby.DolbyConstants
 import org.lunaris.dolby.data.DeviceStateManager
 import org.lunaris.dolby.data.DolbyRepository
+import org.lunaris.dolby.data.DolbyEffectUnavailableException
 
 class DolbyEffectService : Service() {
 
@@ -32,6 +33,8 @@ class DolbyEffectService : Service() {
     private lateinit var repository: DolbyRepository
     private lateinit var deviceStateManager: DeviceStateManager
     private var previousActiveDevice: AudioDeviceInfo? = null
+    private var effectUnavailable = false
+    private var callbacksRegistered = false
 
     private val audioDeviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<AudioDeviceInfo>) {
@@ -40,6 +43,7 @@ class DolbyEffectService : Service() {
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<AudioDeviceInfo>) {
+            if (effectUnavailable) return
             Log.d(TAG, "Devices removed: ${removedDevices.map { it.productName }}")
             if (isDeviceStateMemoryEnabled) {
                 removedDevices.forEach { device ->
@@ -56,14 +60,21 @@ class DolbyEffectService : Service() {
         override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
             val isActive = configs?.any { it.isActive } == true
             if (isActive) {
-                repository.applySavedState()
+                applyRepositoryState()
             }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        repository = DolbyRepository(this)
+        repository = try {
+            DolbyRepository(this)
+        } catch (e: DolbyEffectUnavailableException) {
+            Log.w(TAG, "Dolby effect is unavailable, stopping service", e)
+            effectUnavailable = true
+            stopSelf()
+            return
+        }
         deviceStateManager = DeviceStateManager(this)
         val currentDevice = getCurrentOutputDevice()
         if (currentDevice != null) {
@@ -71,20 +82,23 @@ class DolbyEffectService : Service() {
             if (isDeviceStateMemoryEnabled) {
                 val key = deviceStateManager.deviceKey(currentDevice)
                 val restored = deviceStateManager.restoreSnapshot(key, repository)
-                if (!restored) repository.applySavedState()
+                if (!restored) applyRepositoryState()
             } else {
-                repository.applySavedState()
+                applyRepositoryState()
             }
         } else {
-            repository.applySavedState()
+            applyRepositoryState()
         }
 
+        if (effectUnavailable) return
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, handler)
+        callbacksRegistered = true
         audioManager.registerAudioPlaybackCallback(playbackCallback, handler)
         Log.d(TAG, "Dolby effect service created")
     }
 
     private fun handleDeviceChange() {
+        if (effectUnavailable) return
         val newDevice = getCurrentOutputDevice()
         val oldDevice = previousActiveDevice
 
@@ -103,16 +117,16 @@ class DolbyEffectService : Service() {
                 val restored = deviceStateManager.restoreSnapshot(newKey, repository)
                 if (!restored) {
                     Log.d(TAG, "First time device, applying saved state as base")
-                    repository.applySavedState()
+                    applyRepositoryState()
                 }
             } else {
                 Log.d(TAG, "Device state memory disabled, applying saved state")
-                repository.applySavedState()
+                applyRepositoryState()
             }
             previousActiveDevice = newDevice
         } else {
             repository.updateSpeakerState()
-            repository.applySavedState()
+            applyRepositoryState()
             previousActiveDevice = null
         }
     }
@@ -141,20 +155,42 @@ class DolbyEffectService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        repository.applySavedState()
-        return START_STICKY
+        if (effectUnavailable) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        applyRepositoryState()
+        return if (effectUnavailable) START_NOT_STICKY else START_STICKY
+    }
+
+    private fun applyRepositoryState() {
+        if (effectUnavailable) return
+        if (!repository.applySavedState()) {
+            effectUnavailable = true
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (isDeviceStateMemoryEnabled) {
-            previousActiveDevice?.let { device ->
-                val key = deviceStateManager.deviceKey(device)
-                deviceStateManager.saveSnapshot(key, repository)
+        if (::repository.isInitialized) {
+            if (!effectUnavailable && ::deviceStateManager.isInitialized
+                    && isDeviceStateMemoryEnabled) {
+                try {
+                    previousActiveDevice?.let { device ->
+                        val key = deviceStateManager.deviceKey(device)
+                        deviceStateManager.saveSnapshot(key, repository)
+                    }
+                } catch (e: RuntimeException) {
+                    Log.w(TAG, "Unable to save Dolby state during shutdown", e)
+                }
             }
+            repository.close()
         }
-        audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
-        audioManager.unregisterAudioPlaybackCallback(playbackCallback)
+        if (callbacksRegistered) {
+            audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
+            audioManager.unregisterAudioPlaybackCallback(playbackCallback)
+        }
         handler.removeCallbacksAndMessages(null)
         Log.d(TAG, "Dolby effect service destroyed")
     }
