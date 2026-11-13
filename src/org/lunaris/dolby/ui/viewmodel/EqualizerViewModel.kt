@@ -6,6 +6,7 @@
 package org.lunaris.dolby.ui.viewmodel
 
 import android.app.Application
+import android.util.Log
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.lifecycle.AndroidViewModel
@@ -13,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import org.lunaris.dolby.DolbyConstants
 import org.lunaris.dolby.R
 import org.lunaris.dolby.data.DolbyRepository
+import org.lunaris.dolby.data.DolbyEffectUnavailableException
 import org.lunaris.dolby.data.autoeq.*
 import org.lunaris.dolby.domain.models.*
 import org.lunaris.dolby.utils.ToastHelper
@@ -23,7 +25,12 @@ import kotlinx.coroutines.cancelChildren
 
 class EqualizerViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = DolbyRepository(application)
+    private val repository = try {
+        DolbyRepository(application)
+    } catch (e: DolbyEffectUnavailableException) {
+        Log.w(TAG, "Dolby effect is unavailable", e)
+        null
+    }
     private val context = application
     
     private val prefs: SharedPreferences = application.getSharedPreferences("autoeq_prefs", Context.MODE_PRIVATE)
@@ -57,11 +64,16 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         DolbyConstants.dlog(TAG, "ViewModel initialized")
-        loadEqualizer()
-        observeProfileChanges()
+        if (repository == null) {
+            _uiState.value = EqualizerUiState.Error("Dolby effect is unavailable")
+        } else {
+            loadEqualizer()
+            observeProfileChanges()
+        }
     }
     
     private fun observeProfileChanges() {
+        val repository = repository ?: return
         profileChangeJob?.cancel()
         profileChangeJob = viewModelScope.launch {
             repository.currentProfile.collect {
@@ -74,6 +86,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun loadEqualizer() {
+        val repository = repository ?: return
         if (isCleared) return
         
         viewModelScope.launch {
@@ -134,6 +147,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun applyAutoEqProfileNetwork(ctx: Context, entry: IndexEntry) {
+        if (repository == null) return
         viewModelScope.launch {
             _isSearchLoading.value = true
             val profile = autoEqRepository.getProfile(entry.id)
@@ -151,6 +165,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun applyAutoEqProfile(headphoneName: String, autoEqString: String) {
+        val repository = repository ?: return
         val state = _uiState.value
         if (state !is EqualizerUiState.Success) return
 
@@ -277,6 +292,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setBandMode(mode: BandMode) {
+        val repository = repository ?: return
         viewModelScope.launch {
             try {
                 repository.setBandMode(mode)
@@ -289,6 +305,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setPreset(preset: EqualizerPreset) {
+        val repository = repository ?: return
         viewModelScope.launch {
             try {
                 val targetGains = if (preset.bandMode != currentBandMode) {
@@ -364,6 +381,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setBandGain(index: Int, gain: Int) {
+        val repository = repository ?: return
         viewModelScope.launch {
             try {
                 val state = _uiState.value
@@ -389,6 +407,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun savePreset(name: String): String? {
+        val repository = repository ?: return "Dolby effect is unavailable"
         val state = _uiState.value
         if (state !is EqualizerUiState.Success) return "Invalid state"
         
@@ -413,6 +432,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun deletePreset(preset: EqualizerPreset) {
+        val repository = repository ?: return
         if (!preset.isUserDefined) return
         
         viewModelScope.launch {
@@ -426,6 +446,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun saveImportedPreset(preset: EqualizerPreset): String? {
+        val repository = repository ?: return "Dolby effect is unavailable"
         val state = _uiState.value
         if (state !is EqualizerUiState.Success) return "Invalid state"
         
@@ -454,6 +475,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun resetGains() {
+        val repository = repository ?: return
         viewModelScope.launch {
             try {
                 val flatPreset = getBuiltInPresets(currentBandMode).first()
@@ -470,7 +492,7 @@ class EqualizerViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.coroutineContext.cancelChildren()
         profileChangeJob?.cancel()
         profileChangeJob = null
-        repository.close()
+        repository?.close()
         super.onCleared()
     }
     
